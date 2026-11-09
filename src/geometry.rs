@@ -1,6 +1,7 @@
 //! Primitivas geométricas puras (sin dependencias de Wayland) usadas por el
-//! motor de selección: puntos, rectángulos y la noción de "cuadrante" que
-//! representa las cuatro teclas estilo vim (u/i/j/k).
+//! motor de selección: puntos, rectángulos y la cuadrícula de 10x4 celdas
+//! que corresponde a las cuatro filas del teclado (`1..0`, `q..p`, `a..;`,
+//! `z../`).
 //!
 //! Todo aquí trabaja en coordenadas lógicas de un único output (monitor),
 //! con origen arriba-izquierda, tal como las entrega wlr-layer-shell.
@@ -18,18 +19,37 @@ impl Point {
     }
 }
 
-/// Los cuatro cuadrantes en los que se puede subdividir un [`Rect`],
-/// mapeados 1:1 a las teclas u/i/j/k.
+/// Número de columnas de la cuadrícula de selección (una por tecla de
+/// cada fila del teclado: `1..0`, `q..p`, `a..;`, `z../`).
+pub const GRID_COLS: i32 = 10;
+/// Número de filas de la cuadrícula de selección (las 4 filas del teclado).
+pub const GRID_ROWS: i32 = 4;
+
+/// Una celda de la cuadrícula `GRID_COLS` x `GRID_ROWS` en la que se
+/// subdivide un [`Rect`]. `col` va de `0` (izquierda) a `GRID_COLS - 1`;
+/// `row` de `0` (arriba) a `GRID_ROWS - 1`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Quadrant {
-    /// Tecla 'u'
-    TopLeft,
-    /// Tecla 'i'
-    TopRight,
-    /// Tecla 'j'
-    BottomLeft,
-    /// Tecla 'k'
-    BottomRight,
+pub struct Cell {
+    pub col: i32,
+    pub row: i32,
+}
+
+impl Cell {
+    /// # Panics
+    /// Si `col`/`row` quedan fuera de la cuadrícula (error de programación).
+    pub fn new(col: i32, row: i32) -> Self {
+        assert!((0..GRID_COLS).contains(&col), "Cell::new: col fuera de rango ({col})");
+        assert!((0..GRID_ROWS).contains(&row), "Cell::new: row fuera de rango ({row})");
+        Self { col, row }
+    }
+}
+
+/// Posición del corte `i` (de `0` a `parts`) al dividir el segmento
+/// `[start, start + len)` en `parts` trozos lo más iguales posible.
+/// Los trozos difieren como mucho en 1 píxel y juntos cubren exactamente
+/// `len` píxeles, sin huecos ni solapes.
+fn split_at(start: i32, len: i32, parts: i32, i: i32) -> i32 {
+    start + ((len as i64 * i as i64) / parts as i64) as i32
 }
 
 /// Rectángulo en coordenadas lógicas: `(x, y)` es la esquina superior
@@ -101,10 +121,10 @@ impl Rect {
     }
 
     /// `true` si el rectángulo todavía admite una subdivisión útil, es
-    /// decir, si al subdividir ningún cuadrante resultante colapsaría a
-    /// ancho o alto cero.
+    /// decir, si al subdividirlo en la cuadrícula ninguna celda colapsaría
+    /// a ancho o alto cero.
     pub fn can_subdivide(&self) -> bool {
-        self.width > 1 && self.height > 1
+        self.width >= GRID_COLS && self.height >= GRID_ROWS
     }
 
     #[allow(dead_code)]
@@ -112,32 +132,37 @@ impl Rect {
         p.x >= self.x && p.x <= self.right() && p.y >= self.y && p.y <= self.bottom()
     }
 
-    /// Subdivide el rectángulo en el cuadrante indicado.
+    /// Devuelve la celda `cell` de la cuadrícula `GRID_COLS` x `GRID_ROWS`
+    /// en la que se divide este rectángulo.
     ///
-    /// Cuando `width` o `height` son impares, el píxel sobrante se asigna
-    /// siempre a la mitad derecha/inferior, de modo que
-    /// `top.width + bottom... ` — más precisamente: la suma de anchos de
-    /// las dos mitades horizontales siempre es exactamente `self.width`
-    /// (idem para alturas), sin pérdida ni solapamiento de píxeles.
+    /// Cuando `width` (o `height`) no es múltiplo exacto del número de
+    /// columnas (o filas), los píxeles sobrantes se reparten entre las
+    /// celdas: unas quedan 1 píxel más anchas que otras, pero la suma de
+    /// todas siempre es exactamente `self.width` (idem alturas), sin
+    /// pérdida ni solapamiento de píxeles.
     ///
-    /// No comprueba `can_subdivide`; si `width` o `height` es `<= 1`,
-    /// alguno de los cuadrantes resultantes puede tener ancho o alto `0`.
-    /// Es responsabilidad de la capa de selección invocar
+    /// No comprueba `can_subdivide`; si el rectángulo es más pequeño que
+    /// la cuadrícula, alguna celda puede tener ancho o alto `0`. Es
+    /// responsabilidad de la capa de selección invocar
     /// [`Rect::can_subdivide`] antes de llamar a este método.
-    pub fn subdivide(&self, quadrant: Quadrant) -> Rect {
-        let half_w = self.width / 2;
-        let rem_w = self.width - half_w;
-        let half_h = self.height / 2;
-        let rem_h = self.height - half_h;
+    pub fn subdivide(&self, cell: Cell) -> Rect {
+        let x0 = split_at(self.x, self.width, GRID_COLS, cell.col);
+        let x1 = split_at(self.x, self.width, GRID_COLS, cell.col + 1);
+        let y0 = split_at(self.y, self.height, GRID_ROWS, cell.row);
+        let y1 = split_at(self.y, self.height, GRID_ROWS, cell.row + 1);
+        Rect::new(x0, y0, x1 - x0, y1 - y0)
+    }
 
-        match quadrant {
-            Quadrant::TopLeft => Rect::new(self.x, self.y, half_w, half_h),
-            Quadrant::TopRight => Rect::new(self.x + half_w, self.y, rem_w, half_h),
-            Quadrant::BottomLeft => Rect::new(self.x, self.y + half_h, half_w, rem_h),
-            Quadrant::BottomRight => {
-                Rect::new(self.x + half_w, self.y + half_h, rem_w, rem_h)
-            }
-        }
+    /// Coordenadas X de las `GRID_COLS - 1` líneas internas que separan
+    /// las columnas (para dibujar las guías del overlay).
+    pub fn column_boundaries(&self) -> impl Iterator<Item = i32> + '_ {
+        (1..GRID_COLS).map(move |i| split_at(self.x, self.width, GRID_COLS, i))
+    }
+
+    /// Coordenadas Y de las `GRID_ROWS - 1` líneas internas que separan
+    /// las filas.
+    pub fn row_boundaries(&self) -> impl Iterator<Item = i32> + '_ {
+        (1..GRID_ROWS).map(move |i| split_at(self.y, self.height, GRID_ROWS, i))
     }
 }
 
@@ -182,56 +207,89 @@ mod tests {
     }
 
     #[test]
-    fn subdivide_even_dimensions_splits_exactly_in_half() {
-        let r = Rect::new(0, 0, 200, 100);
+    fn subdivide_exact_multiple_gives_equal_cells() {
+        // 1920 / 10 = 192, 1080 / 4 = 270.
+        let r = Rect::new(0, 0, 1920, 1080);
 
-        assert_eq!(r.subdivide(Quadrant::TopLeft), Rect::new(0, 0, 100, 50));
-        assert_eq!(r.subdivide(Quadrant::TopRight), Rect::new(100, 0, 100, 50));
-        assert_eq!(r.subdivide(Quadrant::BottomLeft), Rect::new(0, 50, 100, 50));
-        assert_eq!(
-            r.subdivide(Quadrant::BottomRight),
-            Rect::new(100, 50, 100, 50)
-        );
+        assert_eq!(r.subdivide(Cell::new(0, 0)), Rect::new(0, 0, 192, 270));
+        assert_eq!(r.subdivide(Cell::new(9, 0)), Rect::new(1728, 0, 192, 270));
+        assert_eq!(r.subdivide(Cell::new(0, 3)), Rect::new(0, 810, 192, 270));
+        assert_eq!(r.subdivide(Cell::new(9, 3)), Rect::new(1728, 810, 192, 270));
+        assert_eq!(r.subdivide(Cell::new(4, 2)), Rect::new(768, 540, 192, 270));
     }
 
     #[test]
-    fn subdivide_odd_dimensions_gives_remainder_to_right_and_bottom() {
-        // 201x101: mitad izquierda/superior = 100, derecha/inferior = 101.
-        let r = Rect::new(0, 0, 201, 101);
+    fn subdivide_respects_rect_origin() {
+        let r = Rect::new(100, 50, 200, 40);
+        assert_eq!(r.subdivide(Cell::new(0, 0)), Rect::new(100, 50, 20, 10));
+        assert_eq!(r.subdivide(Cell::new(9, 3)), Rect::new(280, 80, 20, 10));
+    }
 
-        let tl = r.subdivide(Quadrant::TopLeft);
-        let tr = r.subdivide(Quadrant::TopRight);
-        let bl = r.subdivide(Quadrant::BottomLeft);
-        let br = r.subdivide(Quadrant::BottomRight);
+    #[test]
+    fn subdivide_non_multiple_covers_every_pixel_exactly_once() {
+        // Ni 1366 es múltiplo de 10 ni 767 de 4.
+        let r = Rect::new(7, 3, 1366, 767);
 
-        assert_eq!(tl, Rect::new(0, 0, 100, 50));
-        assert_eq!(tr, Rect::new(100, 0, 101, 50));
-        assert_eq!(bl, Rect::new(0, 50, 100, 51));
-        assert_eq!(br, Rect::new(100, 50, 101, 51));
+        // Las columnas de una fila son contiguas y suman el ancho total.
+        let mut x = r.x;
+        for col in 0..GRID_COLS {
+            let c = r.subdivide(Cell::new(col, 0));
+            assert_eq!(c.x, x, "hueco o solape antes de la columna {col}");
+            assert!(c.width == 136 || c.width == 137);
+            x = c.right();
+        }
+        assert_eq!(x, r.right());
 
-        // Invariante: ninguna franja pierde ni gana píxeles.
-        assert_eq!(tl.width + tr.width, r.width);
-        assert_eq!(tl.height + bl.height, r.height);
+        // Las filas de una columna son contiguas y suman el alto total.
+        let mut y = r.y;
+        for row in 0..GRID_ROWS {
+            let c = r.subdivide(Cell::new(0, row));
+            assert_eq!(c.y, y, "hueco o solape antes de la fila {row}");
+            assert!(c.height == 191 || c.height == 192);
+            y = c.bottom();
+        }
+        assert_eq!(y, r.bottom());
+    }
+
+    #[test]
+    fn boundaries_match_cell_edges() {
+        let r = Rect::new(0, 0, 1366, 767);
+        let cols: Vec<i32> = r.column_boundaries().collect();
+        let rows: Vec<i32> = r.row_boundaries().collect();
+        assert_eq!(cols.len(), (GRID_COLS - 1) as usize);
+        assert_eq!(rows.len(), (GRID_ROWS - 1) as usize);
+        for (i, x) in cols.iter().enumerate() {
+            assert_eq!(*x, r.subdivide(Cell::new(i as i32 + 1, 0)).x);
+        }
+        for (i, y) in rows.iter().enumerate() {
+            assert_eq!(*y, r.subdivide(Cell::new(0, i as i32 + 1)).y);
+        }
     }
 
     #[test]
     fn subdivide_is_recursive_and_stable_across_many_levels() {
         let mut r = Rect::new(0, 0, 1920, 1080);
-        for _ in 0..8 {
-            r = r.subdivide(Quadrant::BottomRight);
+        while r.can_subdivide() {
+            r = r.subdivide(Cell::new(GRID_COLS - 1, GRID_ROWS - 1));
         }
-        // Tras 8 subdivisiones sucesivas el rectángulo sigue siendo válido
-        // (no negativo, contenido en el monitor original).
-        assert!(r.width >= 0 && r.height >= 0);
-        assert!(r.right() <= 1920 && r.bottom() <= 1080);
+        // Tras subdividir hasta el límite el rectángulo sigue siendo
+        // válido (no vacío, contenido en el monitor original).
+        assert!(r.width > 0 && r.height > 0);
+        assert!(r.right() == 1920 && r.bottom() == 1080);
     }
 
     #[test]
-    fn can_subdivide_is_false_at_minimum_size() {
+    fn can_subdivide_requires_one_pixel_per_cell() {
+        assert!(Rect::new(0, 0, GRID_COLS, GRID_ROWS).can_subdivide());
+        assert!(!Rect::new(0, 0, GRID_COLS - 1, 100).can_subdivide());
+        assert!(!Rect::new(0, 0, 100, GRID_ROWS - 1).can_subdivide());
         assert!(!Rect::new(0, 0, 1, 1).can_subdivide());
-        assert!(!Rect::new(0, 0, 1, 50).can_subdivide());
-        assert!(!Rect::new(0, 0, 50, 1).can_subdivide());
-        assert!(Rect::new(0, 0, 2, 2).can_subdivide());
+    }
+
+    #[test]
+    #[should_panic(expected = "col fuera de rango")]
+    fn cell_new_panics_out_of_range() {
+        Cell::new(GRID_COLS, 0);
     }
 
     #[test]

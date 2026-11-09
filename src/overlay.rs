@@ -9,8 +9,8 @@ use smithay_client_toolkit::shm::CreatePoolError;
 
 use wayland_client::protocol::wl_shm;
 
-use crate::geometry::{Point, Quadrant, Rect};
-use crate::selection::{Phase, SelectionState};
+use crate::geometry::{Cell, Point, Rect, GRID_COLS, GRID_ROWS};
+use crate::selection::{key_for_cell, Phase, SelectionState};
 
 // ---------------------------------------------------------------------
 // Paleta / tema del overlay
@@ -40,22 +40,24 @@ impl Color {
 const BACKGROUND_TINT: Color = Color::rgba(0, 0, 0, 102);
 /// Borde brillante cian alrededor del rectángulo activo.
 const BORDER_COLOR: Color = Color::rgb(56, 226, 255);
-/// Guías internas tenues (blanco con alpha bajo) que marcan los 4 cuadrantes.
+/// Guías internas tenues (blanco con alpha bajo) que marcan las celdas de la cuadrícula.
 const GUIDE_COLOR: Color = Color::rgba(255, 255, 255, 80);
 /// Marca del Punto A fijado en Fase 2 (ámbar, bien distinguible del cian).
 const POINT_A_COLOR: Color = Color::rgb(255, 190, 0);
-/// Color de las etiquetas u/i/j/k.
+/// Color de las etiquetas de tecla de cada celda.
 const LABEL_COLOR: Color = Color::rgb(255, 255, 255);
 
 const BORDER_THICKNESS: i32 = 3;
 const GUIDE_THICKNESS: i32 = 1;
 const POINT_A_RADIUS: i32 = 7;
 const POINT_A_THICKNESS: i32 = 2;
-/// Factor de escala de la fuente 8x8 embebida (8*4 = 32px de alto por letra).
+/// Factor de escala máximo de la fuente 8x8 embebida (8*4 = 32px de alto
+/// por letra). En celdas pequeñas se usa la escala más grande que quepa,
+/// hasta 1 (8px); si ni así cabe, la etiqueta se omite.
 const LABEL_SCALE: i32 = 4;
 
 // ---------------------------------------------------------------------
-// Fuente bitmap 8x8 embebida (solo u, i, j, k; ver nota en `glyph_for`)
+// Fuente bitmap 8x8 embebida (las 40 teclas de la cuadrícula)
 // ---------------------------------------------------------------------
 
 /// Glifo monoespaciado de 8x8. Cada `u8` es una fila; el bit más
@@ -64,6 +66,214 @@ const LABEL_SCALE: i32 = 4;
 struct Glyph8x8 {
     rows: [u8; 8],
 }
+
+const GLYPH_DIGIT_1: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00011000,
+        0b00111000,
+        0b01111000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b01111110,
+    ],
+};
+
+const GLYPH_DIGIT_2: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b00000110,
+        0b00001100,
+        0b00011000,
+        0b00110000,
+        0b01100000,
+        0b01111110,
+    ],
+};
+
+const GLYPH_DIGIT_3: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b00000110,
+        0b00011100,
+        0b00000110,
+        0b00000110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_DIGIT_4: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00001110,
+        0b00011110,
+        0b00110110,
+        0b01100110,
+        0b01111111,
+        0b00000110,
+        0b00000110,
+        0b00000110,
+    ],
+};
+
+const GLYPH_DIGIT_5: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b01100000,
+        0b01111100,
+        0b00000110,
+        0b00000110,
+        0b00000110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_DIGIT_6: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100000,
+        0b01100000,
+        0b01111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_DIGIT_7: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b00000110,
+        0b00001100,
+        0b00011000,
+        0b00110000,
+        0b00110000,
+        0b00110000,
+        0b00110000,
+    ],
+};
+
+const GLYPH_DIGIT_8: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_DIGIT_9: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111110,
+        0b00000110,
+        0b00000110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_DIGIT_0: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01101110,
+        0b01111110,
+        0b01110110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_Q: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01101110,
+        0b00111100,
+        0b00000110,
+    ],
+};
+
+const GLYPH_W: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b11000011,
+        0b11000011,
+        0b11000011,
+        0b11011011,
+        0b11011011,
+        0b11111111,
+        0b11100111,
+        0b11000011,
+    ],
+};
+
+const GLYPH_E: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b01100000,
+        0b01100000,
+        0b01111100,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01111110,
+    ],
+};
+
+const GLYPH_R: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111100,
+        0b01100110,
+        0b01100110,
+        0b01111100,
+        0b01111000,
+        0b01101100,
+        0b01100110,
+        0b01100110,
+    ],
+};
+
+const GLYPH_T: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+    ],
+};
+
+const GLYPH_Y: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+        0b00011000,
+    ],
+};
 
 const GLYPH_U: Glyph8x8 = Glyph8x8 {
     rows: [
@@ -88,6 +298,110 @@ const GLYPH_I: Glyph8x8 = Glyph8x8 {
         0b00011000,
         0b00011000,
         0b01111110,
+    ],
+};
+
+const GLYPH_O: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_P: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111100,
+        0b01100110,
+        0b01100110,
+        0b01111100,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+    ],
+};
+
+const GLYPH_A: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00011000,
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01111110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+    ],
+};
+
+const GLYPH_S: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100000,
+        0b00111100,
+        0b00000110,
+        0b00000110,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_D: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111000,
+        0b01101100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01101100,
+        0b01111000,
+    ],
+};
+
+const GLYPH_F: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b01100000,
+        0b01100000,
+        0b01111100,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+    ],
+};
+
+const GLYPH_G: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100000,
+        0b01100000,
+        0b01101110,
+        0b01100110,
+        0b01100110,
+        0b00111110,
+    ],
+};
+
+const GLYPH_H: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01111110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
     ],
 };
 
@@ -117,19 +431,209 @@ const GLYPH_K: Glyph8x8 = Glyph8x8 {
     ],
 };
 
-/// Devuelve el glifo embebido para una tecla vim (`u`/`i`/`j`/`k`,
-/// mayúscula o minúscula).
+const GLYPH_L: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01111110,
+    ],
+};
+
+const GLYPH_SEMICOLON: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00000000,
+        0b00011000,
+        0b00011000,
+        0b00000000,
+        0b00000000,
+        0b00011000,
+        0b00011000,
+        0b00110000,
+    ],
+};
+
+const GLYPH_Z: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111110,
+        0b00000110,
+        0b00001100,
+        0b00011000,
+        0b00110000,
+        0b01100000,
+        0b01100000,
+        0b01111110,
+    ],
+};
+
+const GLYPH_X: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100110,
+        0b01100110,
+        0b00111100,
+        0b00011000,
+        0b00111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+    ],
+};
+
+const GLYPH_C: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00111100,
+        0b01100110,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100000,
+        0b01100110,
+        0b00111100,
+    ],
+};
+
+const GLYPH_V: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b00111100,
+        0b00111100,
+        0b00011000,
+    ],
+};
+
+const GLYPH_B: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01111100,
+        0b01100110,
+        0b01100110,
+        0b01111100,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+        0b01111100,
+    ],
+};
+
+const GLYPH_N: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b01100110,
+        0b01110110,
+        0b01111110,
+        0b01111110,
+        0b01101110,
+        0b01100110,
+        0b01100110,
+        0b01100110,
+    ],
+};
+
+const GLYPH_M: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b11000011,
+        0b11100111,
+        0b11111111,
+        0b11011011,
+        0b11011011,
+        0b11000011,
+        0b11000011,
+        0b11000011,
+    ],
+};
+
+const GLYPH_COMMA: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00011000,
+        0b00011000,
+        0b00110000,
+    ],
+};
+
+const GLYPH_PERIOD: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00000000,
+        0b00011000,
+        0b00011000,
+    ],
+};
+
+const GLYPH_SLASH: Glyph8x8 = Glyph8x8 {
+    rows: [
+        0b00000011,
+        0b00000110,
+        0b00001100,
+        0b00011000,
+        0b00110000,
+        0b01100000,
+        0b11000000,
+        0b00000000,
+    ],
+};
+
+/// Devuelve el glifo embebido para una tecla de la cuadrícula (letras en
+/// mayúscula o minúscula, dígitos y `; , . /`).
 ///
-/// Solo cubre esas cuatro letras porque son las únicas que este overlay
-/// necesita dibujar. El array de glifos está pensado para extenderse: añadir
-/// una letra nueva es agregar una constante `Glyph8x8` más y un brazo a
-/// este `match`, sin tocar el resto del renderizador.
+/// Añadir una tecla nueva es agregar una constante `Glyph8x8` más y un
+/// brazo a este `match`, sin tocar el resto del renderizador.
 fn glyph_for(key: char) -> Option<&'static Glyph8x8> {
     match key.to_ascii_uppercase() {
+        '1' => Some(&GLYPH_DIGIT_1),
+        '2' => Some(&GLYPH_DIGIT_2),
+        '3' => Some(&GLYPH_DIGIT_3),
+        '4' => Some(&GLYPH_DIGIT_4),
+        '5' => Some(&GLYPH_DIGIT_5),
+        '6' => Some(&GLYPH_DIGIT_6),
+        '7' => Some(&GLYPH_DIGIT_7),
+        '8' => Some(&GLYPH_DIGIT_8),
+        '9' => Some(&GLYPH_DIGIT_9),
+        '0' => Some(&GLYPH_DIGIT_0),
+        'Q' => Some(&GLYPH_Q),
+        'W' => Some(&GLYPH_W),
+        'E' => Some(&GLYPH_E),
+        'R' => Some(&GLYPH_R),
+        'T' => Some(&GLYPH_T),
+        'Y' => Some(&GLYPH_Y),
         'U' => Some(&GLYPH_U),
         'I' => Some(&GLYPH_I),
+        'O' => Some(&GLYPH_O),
+        'P' => Some(&GLYPH_P),
+        'A' => Some(&GLYPH_A),
+        'S' => Some(&GLYPH_S),
+        'D' => Some(&GLYPH_D),
+        'F' => Some(&GLYPH_F),
+        'G' => Some(&GLYPH_G),
+        'H' => Some(&GLYPH_H),
         'J' => Some(&GLYPH_J),
         'K' => Some(&GLYPH_K),
+        'L' => Some(&GLYPH_L),
+        ';' => Some(&GLYPH_SEMICOLON),
+        'Z' => Some(&GLYPH_Z),
+        'X' => Some(&GLYPH_X),
+        'C' => Some(&GLYPH_C),
+        'V' => Some(&GLYPH_V),
+        'B' => Some(&GLYPH_B),
+        'N' => Some(&GLYPH_N),
+        'M' => Some(&GLYPH_M),
+        ',' => Some(&GLYPH_COMMA),
+        '.' => Some(&GLYPH_PERIOD),
+        '/' => Some(&GLYPH_SLASH),
         _ => None,
     }
 }
@@ -244,47 +748,52 @@ impl<'a> Canvas<'a> {
 // Composición del frame a partir del SelectionState
 // ---------------------------------------------------------------------
 
-/// Dibuja las guías tenues que dividen `rect` en sus 4 cuadrantes.
-/// No dibuja nada si `rect` ya no admite subdivisión (las guías dejarían
-/// de tener sentido: no habría un u/i/j/k útil que resaltar).
-fn draw_quadrant_guides(canvas: &mut Canvas, rect: Rect) {
+/// Dibuja las guías tenues que dividen `rect` en las celdas de la
+/// cuadrícula. No dibuja nada si `rect` ya no admite subdivisión (las
+/// guías dejarían de tener sentido: no habría una tecla útil que pulsar).
+fn draw_grid_guides(canvas: &mut Canvas, rect: Rect) {
     if !rect.can_subdivide() {
         return;
     }
-    let mid_x = rect.x + rect.width / 2;
-    let mid_y = rect.y + rect.height / 2;
-    canvas.draw_vline(rect.y, rect.bottom(), mid_x, GUIDE_THICKNESS, GUIDE_COLOR);
-    canvas.draw_hline(rect.x, rect.right(), mid_y, GUIDE_THICKNESS, GUIDE_COLOR);
+    for x in rect.column_boundaries() {
+        canvas.draw_vline(rect.y, rect.bottom(), x, GUIDE_THICKNESS, GUIDE_COLOR);
+    }
+    for y in rect.row_boundaries() {
+        canvas.draw_hline(rect.x, rect.right(), y, GUIDE_THICKNESS, GUIDE_COLOR);
+    }
 }
 
-/// Dibuja las etiquetas u/i/j/k centradas en cada uno de los 4 cuadrantes
-/// de `rect`. Si un cuadrante resultante es demasiado pequeño para la
-/// letra a la escala configurada, esa etiqueta se omite (evita solapes
-/// ilegibles en rectángulos ya muy subdivididos).
-fn draw_quadrant_labels(canvas: &mut Canvas, rect: Rect, scale: i32) {
+/// Escala de etiqueta más grande (hasta `max_scale`) con la que una letra
+/// de 8x8 cabe en `cell`, o `None` si no cabe ni a escala 1.
+fn label_scale_for(cell: Rect, max_scale: i32) -> Option<i32> {
+    let fit = cell.width.min(cell.height) / 8;
+    let scale = fit.min(max_scale);
+    (scale >= 1).then_some(scale)
+}
+
+/// Dibuja la etiqueta de tecla centrada en cada celda de `rect`. Cada
+/// etiqueta usa la mayor escala que cabe en su celda; si una celda es
+/// demasiado pequeña incluso para la letra a 8px, su etiqueta se omite.
+fn draw_grid_labels(canvas: &mut Canvas, rect: Rect, max_scale: i32) {
     if !rect.can_subdivide() {
         return;
     }
 
-    const QUADRANT_KEYS: [(Quadrant, char); 4] = [
-        (Quadrant::TopLeft, 'U'),
-        (Quadrant::TopRight, 'I'),
-        (Quadrant::BottomLeft, 'J'),
-        (Quadrant::BottomRight, 'K'),
-    ];
-
-    let glyph_px = 8 * scale;
-
-    for (quadrant, key) in QUADRANT_KEYS {
-        let sub = rect.subdivide(quadrant);
-        if sub.width < glyph_px || sub.height < glyph_px {
-            continue;
+    for row in 0..GRID_ROWS {
+        for col in 0..GRID_COLS {
+            let cell = Cell::new(col, row);
+            let sub = rect.subdivide(cell);
+            let Some(scale) = label_scale_for(sub, max_scale) else {
+                continue;
+            };
+            let glyph_px = 8 * scale;
+            let key = key_for_cell(cell);
+            let glyph = glyph_for(key).expect("glifo interno faltante para una tecla de la cuadrícula");
+            let center_x = sub.x + sub.width / 2;
+            let center_y = sub.y + sub.height / 2;
+            let top_left = Point::new(center_x - glyph_px / 2, center_y - glyph_px / 2);
+            canvas.draw_glyph(glyph, top_left, scale, LABEL_COLOR);
         }
-        let glyph = glyph_for(key).expect("glifo interno faltante para una tecla vim válida");
-        let center_x = sub.x + sub.width / 2;
-        let center_y = sub.y + sub.height / 2;
-        let top_left = Point::new(center_x - glyph_px / 2, center_y - glyph_px / 2);
-        canvas.draw_glyph(glyph, top_left, scale, LABEL_COLOR);
     }
 }
 
@@ -301,11 +810,11 @@ fn paint_frame(pixels: &mut [u8], width: i32, height: i32, stride: i32, selectio
 
     let current = selection.current();
 
-    // 2. Guías internas de los 4 cuadrantes del rectángulo activo.
-    draw_quadrant_guides(&mut canvas, current);
+    // 2. Guías internas de la cuadrícula 10x4 del rectángulo activo.
+    draw_grid_guides(&mut canvas, current);
 
-    // 3. Etiquetas u/i/j/k en cada cuadrante.
-    draw_quadrant_labels(&mut canvas, current, LABEL_SCALE);
+    // 3. Etiqueta de tecla en cada celda.
+    draw_grid_labels(&mut canvas, current, LABEL_SCALE);
 
     // 4. Borde resaltado del rectángulo activo (encima de las guías).
     canvas.draw_rect_outline(current, BORDER_THICKNESS, BORDER_COLOR);
@@ -499,22 +1008,52 @@ mod tests {
     }
 
     #[test]
-    fn quadrant_guides_are_skipped_when_rect_cannot_be_subdivided() {
+    fn grid_guides_are_skipped_when_rect_cannot_be_subdivided() {
         let (mut buf, stride) = blank_buffer(10, 10);
         let mut canvas = Canvas::new(&mut buf, 10, 10, stride);
-        // 1x1: can_subdivide() es false.
-        draw_quadrant_guides(&mut canvas, Rect::new(4, 4, 1, 1));
+        // 9x9: menos de una columna por píxel, can_subdivide() es false.
+        draw_grid_guides(&mut canvas, Rect::new(0, 0, 9, 9));
         assert!(buf.iter().all(|&b| b == 0));
     }
 
     #[test]
-    fn glyph_for_covers_exactly_the_four_vim_keys() {
-        for key in ['u', 'U', 'i', 'I', 'j', 'J', 'k', 'K'] {
-            assert!(glyph_for(key).is_some(), "falta glifo para '{key}'");
+    fn every_grid_key_has_a_distinct_glyph() {
+        use crate::selection::KEY_GRID;
+        let mut seen = Vec::new();
+        for key in KEY_GRID.iter().flatten() {
+            let glyph = glyph_for(*key).unwrap_or_else(|| panic!("falta glifo para '{key}'"));
+            assert!(glyph.rows.iter().any(|&r| r != 0), "glifo vacío para '{key}'");
+            assert!(!seen.contains(&glyph.rows), "glifo repetido para '{key}'");
+            seen.push(glyph.rows);
         }
-        for key in ['a', 'z', '1', ' '] {
+        assert!(glyph_for('Q').is_some());
+        for key in ['-', '=', '[', ' ', ':'] {
             assert!(glyph_for(key).is_none(), "no debería haber glifo para '{key}'");
         }
+    }
+
+    #[test]
+    fn label_scale_shrinks_with_cell_and_disappears_below_8px() {
+        assert_eq!(label_scale_for(Rect::new(0, 0, 192, 270), 4), Some(4));
+        assert_eq!(label_scale_for(Rect::new(0, 0, 19, 67), 4), Some(2));
+        assert_eq!(label_scale_for(Rect::new(0, 0, 8, 8), 4), Some(1));
+        assert_eq!(label_scale_for(Rect::new(0, 0, 7, 100), 4), None);
+    }
+
+    #[test]
+    fn grid_guides_draw_nine_columns_and_three_rows() {
+        let (mut buf, stride) = blank_buffer(100, 40);
+        let mut canvas = Canvas::new(&mut buf, 100, 40, stride);
+        draw_grid_guides(&mut canvas, Rect::new(0, 0, 100, 40));
+        // Celdas de 10x10: guías verticales en x=10,20..90 y
+        // horizontales en y=10,20,30.
+        for x in (10..100).step_by(10) {
+            assert_eq!(pixel_at(&buf, stride, x, 5), GUIDE_COLOR, "falta guía en x={x}");
+        }
+        for y in [10, 20, 30] {
+            assert_eq!(pixel_at(&buf, stride, 5, y), GUIDE_COLOR, "falta guía en y={y}");
+        }
+        assert_eq!(pixel_at(&buf, stride, 5, 5), Color::rgba(0, 0, 0, 0));
     }
 
     #[test]

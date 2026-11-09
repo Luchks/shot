@@ -33,7 +33,7 @@ use wayland_client::{
 use crate::capture::{self, CaptureRegion};
 use crate::geometry::Rect;
 use crate::overlay::Overlay;
-use crate::selection::{quadrant_from_key, SelectionState};
+use crate::selection::{cell_from_key, SelectionState};
 
 /// Valores de keysym X11 (estables, heredados por xkbcommon) para las
 /// teclas de control que no dependen de la disposición del teclado. Se
@@ -302,8 +302,8 @@ impl AppState {
         }
 
         if let Some(key) = utf8.and_then(|s| s.chars().next()) {
-            if let Some(quadrant) = quadrant_from_key(key) {
-                if self.selection.subdivide(quadrant) {
+            if let Some(cell) = cell_from_key(key) {
+                if self.selection.subdivide(cell) {
                     self.redraw(qh);
                 }
             }
@@ -469,8 +469,8 @@ impl KeyboardHandler for AppState {
 
     /// Auto-repetición de una tecla mantenida presionada (gestionada por
     /// SCTK según `RepeatInfo` del compositor). La reenviamos a la misma
-    /// lógica que una pulsación normal: mantener u/i/j/k mantiene
-    /// subdividiendo, lo cual es un comportamiento razonable y nadie
+    /// lógica que una pulsación normal: mantener una tecla de la
+    /// cuadrícula mantiene subdividiendo, lo cual es un comportamiento razonable y nadie
     /// mantendría Enter/Escape el tiempo suficiente para que importe.
     fn repeat_key(
         &mut self,

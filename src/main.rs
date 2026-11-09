@@ -9,7 +9,8 @@ use std::process::ExitCode;
 
 /// `my-screenshot [-o|--output RUTA]`
 ///
-/// Sin argumentos: selección por teclado (u/i/j/k, Enter/Espacio,
+/// Sin argumentos: selección por teclado (cuadrícula 10x4 con las teclas
+/// `1..0`, `q..p`, `a..;`, `z../`; Enter/Espacio,
 /// Backspace, Escape) y copia el resultado al portapapeles con
 /// `wl-copy`. Con `-o`/`--output`, además guarda una copia PNG en
 /// `RUTA`.

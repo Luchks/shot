@@ -1,4 +1,4 @@
-use crate::geometry::{Point, Quadrant, Rect};
+use crate::geometry::{Cell, Point, Rect, GRID_COLS, GRID_ROWS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
@@ -15,18 +15,31 @@ pub struct SelectionState {
     history: Vec<Rect>,
 }
 
-pub fn quadrant_from_key(key: char) -> Option<Quadrant> {
-    match key.to_ascii_lowercase() {
-        'u' => Some(Quadrant::TopLeft),
-        'i' => Some(Quadrant::TopRight),
-        'j' => Some(Quadrant::BottomLeft),
-        'k' => Some(Quadrant::BottomRight),
-        _ => None,
-    }
+/// Disposición de teclas de la cuadrícula (teclado inglés US), fila por
+/// fila de arriba abajo. La tecla en `KEY_GRID[row][col]` selecciona la
+/// celda `Cell { col, row }`.
+pub const KEY_GRID: [[char; GRID_COLS as usize]; GRID_ROWS as usize] = [
+    ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'],
+    ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p'],
+    ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';'],
+    ['z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/'],
+];
+
+/// Traduce una tecla a su celda de la cuadrícula. Las letras no
+/// distinguen mayúsculas (Bloq Mayús activado sigue funcionando).
+pub fn cell_from_key(key: char) -> Option<Cell> {
+    let key = key.to_ascii_lowercase();
+    KEY_GRID.iter().enumerate().find_map(|(row, keys)| {
+        keys.iter()
+            .position(|&k| k == key)
+            .map(|col| Cell::new(col as i32, row as i32))
+    })
 }
 
-
-
+/// Tecla asociada a una celda (para dibujar las etiquetas del overlay).
+pub fn key_for_cell(cell: Cell) -> char {
+    KEY_GRID[cell.row as usize][cell.col as usize]
+}
 
 impl SelectionState {
     pub fn new(monitor: Rect) -> Self {
@@ -66,12 +79,13 @@ impl SelectionState {
         self.result.is_some()
     }
 
-    /// Aplica u/i/j/k: subdivide `current` en el cuadrante indicado.
+    /// Aplica una tecla de la cuadrícula: subdivide `current` y se queda
+    /// con la celda indicada.
     ///
     /// No hace nada (devuelve `false`) si:
     /// - la selección ya terminó (`is_finished()`), o
     /// - `current` no admite más subdivisión ([`Rect::can_subdivide`]).
-    pub fn subdivide(&mut self, quadrant: Quadrant) -> bool {
+    pub fn subdivide(&mut self, cell: Cell) -> bool {
         if self.is_finished() {
             return false;
         }
@@ -79,7 +93,7 @@ impl SelectionState {
             return false;
         }
         self.history.push(self.current);
-        self.current = self.current.subdivide(quadrant);
+        self.current = self.current.subdivide(cell);
         true
     }
 
@@ -146,7 +160,7 @@ impl SelectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{Point,Quadrant,Rect};
+    use crate::geometry::{Cell, Point, Rect};
 
     fn monitor() -> Rect {
         Rect::new(0, 0, 1920, 1080)
@@ -162,38 +176,64 @@ mod tests {
     }
 
     #[test]
-    fn quadrant_from_key_maps_vim_keys_case_insensitively() {
-        assert_eq!(quadrant_from_key('u'), Some(Quadrant::TopLeft));
-        assert_eq!(quadrant_from_key('U'), Some(Quadrant::TopLeft));
-        assert_eq!(quadrant_from_key('i'), Some(Quadrant::TopRight));
-        assert_eq!(quadrant_from_key('j'), Some(Quadrant::BottomLeft));
-        assert_eq!(quadrant_from_key('k'), Some(Quadrant::BottomRight));
-        assert_eq!(quadrant_from_key('x'), None);
+    fn cell_from_key_maps_the_four_keyboard_rows() {
+        assert_eq!(cell_from_key('1'), Some(Cell::new(0, 0)));
+        assert_eq!(cell_from_key('0'), Some(Cell::new(9, 0)));
+        assert_eq!(cell_from_key('q'), Some(Cell::new(0, 1)));
+        assert_eq!(cell_from_key('p'), Some(Cell::new(9, 1)));
+        assert_eq!(cell_from_key('a'), Some(Cell::new(0, 2)));
+        assert_eq!(cell_from_key(';'), Some(Cell::new(9, 2)));
+        assert_eq!(cell_from_key('z'), Some(Cell::new(0, 3)));
+        assert_eq!(cell_from_key('/'), Some(Cell::new(9, 3)));
+        assert_eq!(cell_from_key('g'), Some(Cell::new(4, 2)));
+    }
+
+    #[test]
+    fn cell_from_key_is_case_insensitive_and_rejects_other_keys() {
+        assert_eq!(cell_from_key('Q'), cell_from_key('q'));
+        assert_eq!(cell_from_key('M'), cell_from_key('m'));
+        for key in ['-', '=', '[', ']', '\\', '\'', '`', ' ', ':', '<'] {
+            assert_eq!(cell_from_key(key), None, "'{key}' no debería ser una celda");
+        }
+    }
+
+    #[test]
+    fn key_grid_has_forty_distinct_keys_and_round_trips() {
+        let mut seen = std::collections::HashSet::new();
+        for row in 0..GRID_ROWS {
+            for col in 0..GRID_COLS {
+                let cell = Cell::new(col, row);
+                let key = key_for_cell(cell);
+                assert!(seen.insert(key), "tecla repetida: '{key}'");
+                assert_eq!(cell_from_key(key), Some(cell));
+            }
+        }
+        assert_eq!(seen.len(), 40);
     }
 
     #[test]
     fn subdivide_narrows_current_rect_recursively() {
         let mut s = SelectionState::new(monitor());
 
-        assert!(s.subdivide(Quadrant::TopLeft));
-        assert_eq!(s.current(), Rect::new(0, 0, 960, 540));
+        assert!(s.subdivide(Cell::new(0, 0))); // '1'
+        assert_eq!(s.current(), Rect::new(0, 0, 192, 270));
 
-        assert!(s.subdivide(Quadrant::BottomRight));
-        assert_eq!(s.current(), Rect::new(480, 270, 480, 270));
+        assert!(s.subdivide(Cell::new(9, 3))); // '/'
+        assert_eq!(s.current(), Rect::new(172, 202, 20, 68));
     }
 
     #[test]
     fn confirming_phase_one_sets_point_a_and_starts_phase_two() {
         let mut s = SelectionState::new(monitor());
-        s.subdivide(Quadrant::TopLeft); // current = (0,0,960,540)
-        s.subdivide(Quadrant::BottomRight); // current = (480,270,480,270)
+        s.subdivide(Cell::new(2, 1)); // 'e' -> current = (384,270,192,270)
+        s.subdivide(Cell::new(5, 2)); // 'h' -> current = (480,405,19,67)
 
         assert!(s.confirm());
 
         assert_eq!(s.phase(), Phase::Second);
-        assert_eq!(s.point_a(), Some(Point::new(480, 270)));
+        assert_eq!(s.point_a(), Some(Point::new(480, 405)));
         // Fase 2 empieza en A -> esquina inferior derecha del monitor.
-        assert_eq!(s.current(), Rect::new(480, 270, 1440, 810));
+        assert_eq!(s.current(), Rect::new(480, 405, 1440, 675));
         assert!(!s.is_finished());
     }
 
@@ -210,27 +250,27 @@ mod tests {
     fn full_two_phase_flow_produces_expected_final_rect() {
         let mut s = SelectionState::new(monitor());
 
-        // Fase 1: nos quedamos con el cuadrante superior izquierdo.
-        s.subdivide(Quadrant::TopLeft); // (0,0,960,540)
-        s.confirm(); // A = (0,0); Fase 2 activa sobre (0,0,1920,1080)
+        // Fase 1: celda 'w' -> (192,270,192,270); A = (192,270).
+        s.subdivide(Cell::new(1, 1));
+        s.confirm(); // Fase 2 activa sobre (192,270)-(1920,1080) = 1728x810
 
-        // Fase 2: nos quedamos con el cuadrante superior izquierdo de esa
-        // subárea, es decir B = esquina inf-der de (0,0,960,540) = (960,540).
-        s.subdivide(Quadrant::TopLeft);
+        // Fase 2: celda 'b' de esa subárea -> (883,877,173,203);
+        // B = su esquina inf-der = (1056,1080).
+        s.subdivide(Cell::new(4, 3));
         s.confirm();
 
         assert!(s.is_finished());
-        assert_eq!(s.result(), Some(Rect::new(0, 0, 960, 540)));
+        assert_eq!(s.result(), Some(Rect::new(192, 270, 864, 810)));
     }
 
     #[test]
     fn undo_restores_the_rect_before_the_last_subdivision() {
         let mut s = SelectionState::new(monitor());
         let after_first = {
-            s.subdivide(Quadrant::TopLeft);
+            s.subdivide(Cell::new(0, 0));
             s.current()
         };
-        s.subdivide(Quadrant::BottomRight);
+        s.subdivide(Cell::new(9, 3));
 
         assert!(s.undo());
         assert_eq!(s.current(), after_first);
@@ -243,7 +283,7 @@ mod tests {
         assert!(!s.undo());
         assert_eq!(s.current(), monitor());
 
-        s.subdivide(Quadrant::TopLeft);
+        s.subdivide(Cell::new(0, 0));
         s.confirm(); // entra a Fase 2, historial se limpia.
 
         // Nada que deshacer al inicio de la Fase 2 (por diseño, no cruza
@@ -256,9 +296,9 @@ mod tests {
     fn multiple_undo_calls_walk_back_multiple_levels_in_order() {
         let mut s = SelectionState::new(monitor());
         let r0 = s.current();
-        s.subdivide(Quadrant::TopLeft);
+        s.subdivide(Cell::new(0, 0));
         let r1 = s.current();
-        s.subdivide(Quadrant::BottomRight);
+        s.subdivide(Cell::new(9, 3));
 
         assert!(s.undo());
         assert_eq!(s.current(), r1);
@@ -276,7 +316,7 @@ mod tests {
         assert!(s.is_finished());
         let result_before = s.result();
 
-        assert!(!s.subdivide(Quadrant::TopLeft));
+        assert!(!s.subdivide(Cell::new(0, 0)));
         assert!(!s.confirm());
         assert!(!s.undo());
         assert_eq!(s.result(), result_before);
@@ -286,7 +326,7 @@ mod tests {
     fn subdivide_ignored_when_current_rect_cannot_be_subdivided_further() {
         let tiny_monitor = Rect::new(0, 0, 1, 1);
         let mut s = SelectionState::new(tiny_monitor);
-        assert!(!s.subdivide(Quadrant::TopLeft));
+        assert!(!s.subdivide(Cell::new(0, 0)));
         assert_eq!(s.current(), tiny_monitor);
     }
 }
